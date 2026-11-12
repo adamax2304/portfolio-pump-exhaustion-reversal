@@ -1,0 +1,13 @@
+pandas>=2.0
+numpy
+scipy
+ccxt
+pydantic>=2
+pyyaml
+typer
+duckdb
+pyarrow
+matplotlib
+plotly
+statsmodels
+requests

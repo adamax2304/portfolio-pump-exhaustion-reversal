@@ -1,0 +1,272 @@
+# Pump Exhaustion Reversal - default config (Stage 1: research/backtest only)
+# Full effective config - every key here has a matching field in
+# pump_exhaustion_reversal/config.py::AppConfig. A partial override file
+# (e.g. config/backtest.yaml) only needs to list the keys it changes.
+
+strategy:
+  name: "Pump Exhaustion Reversal"
+  version: "1.0"
+  live_trading_enabled: false
+  paper_trading_enabled: true
+
+universe:
+  exchanges: ["bybit", "binance"]
+  market_type: "linear_perp"
+  quote_asset: "USDT"
+  min_24h_quote_volume_usd: 2000000
+  preferred_min_24h_quote_volume_usd: 15000000
+  max_spread_bps: 20
+  min_symbol_age_days: 14
+  exclude_stablecoins: true
+  exclude_leveraged_tokens: true
+  exclude_symbols_with_trading_halts: true
+
+pump_detector:
+  windows: ["5m", "15m", "1h", "4h", "24h"]
+  min_pump_score: 70
+  min_return_zscore: 3.0
+  min_volume_zscore: 3.0
+  min_abnormal_return_15m: 0.08
+  min_abnormal_return_1h: 0.15
+  min_abnormal_return_4h: 0.25
+  min_abnormal_return_24h: 0.40
+  use_btc_adjusted_return: true
+  beta_lookback_days: 30
+
+pump_score_weights:
+  abnormal_return: 20
+  volume_anomaly: 15
+  volatility_expansion: 10
+  liquidation_spike: 20
+  oi_anomaly: 15
+  perp_spot_imbalance: 10
+  liquidity_marketcap_context: 10
+
+catalyst_filter:
+  enabled: true
+  block_aggressive_if_positive_news_within_hours: 12
+  block_standard_if_positive_news_within_hours: 6
+  allow_conservative_after_hours: 3
+  require_manual_review_for_major_listing: true
+
+structure:
+  pivot_left_bars: 2
+  pivot_right_bars: 2
+  min_swing_distance_atr: 0.35
+  min_swing_distance_bps: 30
+  require_close_below_higher_low: true
+  close_confirmation_bars: 1
+  allow_wick_break: false
+
+sweep:
+  min_sweep_bps: 15
+  max_rejection_bars: 5
+  close_back_below_previous_high: true
+  upper_wick_body_ratio_min: 2.0
+
+failed_reclaim:
+  enabled: true
+  reclaim_zone_bps: 35
+  max_bars_after_break: 24
+  require_lower_high: true
+  require_close_below_reclaim_zone: true
+
+volume_decay:
+  threshold: 0.50
+  strong_threshold: 0.35
+
+cvd:
+  enabled: true
+  divergence_tolerance: 0.02
+  min_cvd_lookback_bars: 20
+  require_cvd_rollover_for_aggressive: false
+  require_cvd_rollover_for_standard: true
+
+oi:
+  rollover_lookback: "30m"
+  min_oi_drop_pct_after_peak: 5
+  danger_oi_rise_pct_on_drop: 8
+
+liquidations:
+  enabled: true
+  allow_proxy_mode: true
+  short_liq_spike_zscore_min: 5
+  depletion_ratio_threshold: 0.35
+  long_liq_confirmation_after_break: true
+
+avwap:
+  enabled: true
+  anchors: ["pump_start", "breakout_candle", "climax_candle"]
+  require_loss_for_standard: false
+  add_score_if_lost: true
+
+funding:
+  overheated_percentile: 90
+  extreme_percentile: 97
+  max_score_weight: 3
+
+rsi:
+  enabled: true
+  length: 14
+  divergence_weight_low: true
+  max_score_weight: 2
+
+exhaustion_score_weights:
+  structure_break: 20
+  failed_reclaim_lower_high: 15
+  cvd_bearish_divergence: 15
+  oi_rollover: 12
+  volume_decay: 10
+  short_liquidation_exhaustion: 10
+  sweep_rejection: 8
+  avwap_loss: 5
+  funding_long_crowding: 3
+  rsi_divergence: 2
+
+exhaustion_thresholds:
+  watch: 50
+  armed: 65
+  trade: 75
+  high_confidence: 85
+
+# Stage 2A: within-event retry of the exhaustion-watch cycle (new climax,
+# fresh structure) after a dynamic post-break invalidation - NOT the same
+# thing as risk.max_symbol_attempts below (cross-event symbol-lock after
+# losing trades). See config.py:ReversalAttemptsConfig.
+reversal_attempts:
+  enabled: true
+  max_reversal_attempts: 2
+  retry_on_new_pump_high: true
+  retry_on_bullish_hl_reformation: false
+  retry_on_strong_reclaim: false
+
+hard_gates:
+  require_pump_score_min: 70
+  # lowered from the spec's literal 75 to 70 - see config.py:HardGatesConfig
+  # for why (matches the minimum across entry_modes' own min_exhaustion_score
+  # so conservative mode's own 70 threshold is actually reachable)
+  require_exhaustion_score_min: 70
+  require_structure_confirmation: true
+  require_no_major_positive_news: true
+  require_liquidity_ok: true
+  require_spread_ok: true
+  require_no_symbol_lock: true
+  require_btc_regime_check: true
+
+entry_modes:
+  aggressive:
+    enabled: false
+    min_exhaustion_score: 80
+    require_sweep_rejection: true
+    require_cvd_divergence: true
+    require_structure_break: false
+    risk_multiplier: 0.50
+
+  standard:
+    enabled: true
+    min_exhaustion_score: 75
+    require_structure_break: true
+    require_failed_reclaim: true
+    require_lower_high: true
+    require_cvd_confirmation: true
+    risk_multiplier: 1.00
+
+  conservative:
+    enabled: true
+    min_exhaustion_score: 70
+    require_structure_break: true
+    require_failed_reclaim: true
+    require_break_of_new_local_low: true
+    require_avwap_loss: false
+    risk_multiplier: 0.75
+
+no_trade:
+  positive_major_news: true
+  fresh_listing_without_structure_break: true
+  spot_cvd_confirming_highs: true
+  price_still_hh_hl: true
+  volume_expanding_on_new_highs: true
+  oi_expanding_with_price_and_no_rollover: true
+  spread_too_wide: true
+  liquidity_too_thin: true
+  btc_extreme_trend_against_short: true
+  symbol_locked_after_failed_attempts: true
+  data_confidence_too_low: true
+
+stops:
+  atr_timeframe: "5m"
+  atr_length: 14
+  atr_buffer_multiplier: 0.25
+  min_stop_bps: 40
+  max_stop_bps: 1200
+
+risk:
+  initial_risk_per_trade_pct: 0.20
+  min_risk_per_trade_pct: 0.10
+  max_risk_per_trade_pct: 0.25
+  proven_edge_max_risk_pct: 0.50
+  max_concurrent_positions: 3
+  max_same_cluster_positions: 1
+  max_daily_loss_pct: 1.00
+  max_weekly_loss_pct: 3.00
+  max_symbol_attempts: 2
+  symbol_lock_hours_after_two_stops: 6
+  no_martingale: true
+  no_average_up_losers: true
+
+leverage:
+  default_max_leverage: 3
+  absolute_max_leverage: 5
+  allow_higher_only_manual: true
+
+take_profit:
+  tp1_r_multiple: 1.0
+  tp1_close_pct: 30
+  move_stop_after_tp1: "breakeven_or_reduce_risk"
+  tp2_target: "pump_avwap_or_breakout_area"
+  tp2_close_pct: 30
+  tp3_target: "0.5_pump_retracement_or_trailing_structure"
+  tp3_close_pct: 40
+
+time_stop:
+  enabled: true
+  standard_minutes: 60
+  aggressive_minutes: 30
+  conservative_minutes: 90
+  exit_if_no_progress_r: 0.25
+  exit_if_oi_reaccelerates: true
+
+execution_model:
+  entry_type: "next_bar_open_or_limit_retest"
+  default_slippage_bps: 10
+  high_vol_slippage_multiplier: 2.5
+  stop_slippage_bps: 20
+  taker_fee_bps: 5
+  maker_fee_bps: 2
+  funding_enabled: true
+  max_volume_participation_pct: 2
+
+backtest:
+  start_date: "2025-01-01"
+  end_date: "2026-08-25"
+  timeframe_base: "1m"
+  train_pct: 0.60
+  validation_pct: 0.20
+  oos_pct: 0.20
+  include_fees: true
+  include_slippage: true
+  include_funding: true
+  prevent_lookahead: true
+
+acceptance:
+  min_oos_trades: 100
+  preferred_oos_trades: 300
+  oos_profit_factor_min: 1.25
+  preferred_profit_factor: 1.40
+  oos_expectancy_r_min: 0.10
+  max_drawdown_r_reasonable: true
+  no_single_trade_dominates_profit: true
+  slippage_stress_still_positive: true
+  news_filter_improves_tail_risk: true
+  paper_trading_days_min: 30
+  paper_trading_preferred_days: 60

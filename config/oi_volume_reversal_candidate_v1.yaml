@@ -1,0 +1,197 @@
+# FROZEN STRATEGY CONFIG - Phase 2D: OI_ROLLOVER + VOLUME_DECAY OOS Validation
+#
+# This file is an immutable RECORD of the exact candidate that showed a
+# positive net result on the Phase 2C discovery sample (Bybit-only:
+# N=26, net~+0.105R, PF~1.34; combined Binance+Bybit N=31, net~+0.225R,
+# PF~1.84 - but Binance's N=5 subset is not independently trustworthy, see
+# discovery_result below). It is NOT meant to be fed into config.load_config()
+# directly (it deliberately also records research-script-level choices -
+# primary_entry_family, entry_mode, atr_stop_multiple, barrier_family - that
+# are not part of AppConfig's schema). Read it as documentation + a plain
+# YAML dict for scripts/run_phase_2d_oos_validation.py to pull frozen values
+# from; the actual AppConfig values live in app_config_snapshot below and
+# were dumped verbatim from config/default.yaml + config/backtest.yaml as
+# loaded on 2026-08-27 (see revision.combined_sha256 for the exact code this
+# was frozen against).
+#
+# RULE: no parameter below may be changed after this file is committed and
+# before the OOS verdict (Phase 2D point 17) is reached. If a change is
+# genuinely needed, that invalidates this candidate's OOS run entirely - do
+# not edit this file in place; create a new oi_volume_reversal_candidate_v2.yaml
+# and restart the freeze.
+
+frozen_at: "2026-08-27"
+discovery_sample_span: {start: "2026-02-25", end: "2026-08-25"}  # actual stored OHLCV/OI coverage, not config.backtest's wider (mostly-empty) declared range
+
+discovery_result:
+  combined:
+    n: 31
+    net_expectancy_r: 0.225
+    profit_factor: 1.84
+    win_rate: 0.581
+    bootstrap_95ci_net_expectancy_r: [-0.143, 0.588]  # crosses zero - NOT a confirmed edge, this is why Phase 2D exists
+  binance_subset:
+    n: 5
+    net_expectancy_r: 0.851
+    profit_factor: 15.38
+    note: "N too small for this PF to be trustworthy - almost certainly 1-2 outsized winners, not treated as evidence"
+  bybit_subset:
+    n: 26
+    net_expectancy_r: 0.105
+    profit_factor: 1.34
+    note: "the more honest read of this candidate's actual magnitude - PRIMARY validation target for Phase 2D"
+
+primary_hypothesis: >
+  H1: OI rollover + volume decay after an abnormal pump has positive net
+  expectancy for a short reversal on unseen Bybit events, after realistic
+  execution costs.
+primary_metric: net_expectancy_r
+secondary_metrics: [profit_factor, win_rate, avg_win_r, avg_loss_r, mae_r, mfe_r, max_drawdown_r, tail_continuation_risk]
+
+# ---------------------------------------------------------------------------
+# Signal definition (research/early_entry.py's "oi_plus_volume_decay" combo -
+# frozen exactly as implemented in Phase 2C, same-bar simultaneity, NOT a
+# temporal window - both flags must be True on the same closed bar, per
+# strategy/exhaustion_detector.compute_exhaustion_flags_at).
+# ---------------------------------------------------------------------------
+signal_definition:
+  primary_entry_family: "oi_plus_volume_decay"
+  required_flags: ["oi_rollover", "volume_decay"]
+  temporal_relation: "same_bar"  # both flags evaluated at the same post-pump-local bar index i - see early_entry._walk_attempt_window
+  candidate_timestamp_rule: >
+    First bar (post-pump-local, i.e. >= climax - structure.pivot_left_bars)
+    where compute_exhaustion_flags_at(i, ...).oi_rollover is True AND
+    .volume_decay is True simultaneously, walked bar-by-bar from the event's
+    climax-anchored post-pump window - identical logic on every reversal
+    attempt (max 2, see retry_logic below), never re-evaluated with
+    hindsight.
+  oi_rollover_definition:  # features/oi.py:detect_oi_rollover
+    rollover_lookback: "30m"
+    min_oi_drop_pct_after_peak: 5.0
+    formula: "drop_pct_from_peak = (rolling_peak - oi) / rolling_peak * 100; rollover = drop_pct_from_peak >= min_oi_drop_pct_after_peak; rolling_peak = oi.rolling(lookback_bars, min_periods=1).max() (trailing/causal only)"
+  volume_decay_definition:  # features/volume.py:volume_decay_ratio + volume_decay_flags
+    threshold: 0.5
+    strong_threshold: 0.35
+    formula: "decay_ratio = current_volume / peak_volume_up_to_detection (peak fixed at pump_detected_ts, never updated with future data); volume_decayed = decay_ratio <= threshold"
+
+# ---------------------------------------------------------------------------
+# Pump detector (defines which pumps are even eligible - unchanged from
+# discovery, config/default.yaml's pump_detector section verbatim).
+# ---------------------------------------------------------------------------
+pump_detector:
+  windows: ["5m", "15m", "1h", "4h", "24h"]
+  min_pump_score: 70.0
+  min_return_zscore: 3.0
+  min_volume_zscore: 3.0
+  min_abnormal_return_15m: 0.08
+  min_abnormal_return_1h: 0.15
+  min_abnormal_return_4h: 0.25
+  min_abnormal_return_24h: 0.4
+  use_btc_adjusted_return: true
+  beta_lookback_days: 30
+
+# ---------------------------------------------------------------------------
+# Entry / stop / exit / retry - the "exactly one primary setup" (Phase 2D
+# point 4: no threshold grid on OOS) - these are the Phase 2B/2C HEADLINE
+# choices, frozen.
+# ---------------------------------------------------------------------------
+entry_price_logic:
+  entry_mode: "confirmation_close"  # signal bar's own close - see research/entry_edge.resolve_entry_price
+  walk_start: "signal_bar_idx + 1"  # first bar the barrier walk checks (matches first_passage_from_entry)
+
+stop_definition:
+  anchor: "event-scoped climax high"  # NOT the signal bar's own high - see research/entry_edge.compute_atr_stop_price called with the climax's absolute index
+  atr_length: 14
+  atr_buffer_multiplier: 0.25  # the single frozen ATR multiple - NOT the 0.15/0.25/0.40 sensitivity grid
+  formula: "stop_price = climax_bar_high + atr_buffer_multiplier * ATR(atr_length)"
+
+exit_logic:
+  barrier_family: "2R_1R_4h"
+  profit_r_multiple: 2.0
+  adverse_r_multiple: 1.0
+  horizon_hours: 4
+  same_candle_ambiguity: "adverse/stop wins ties"
+  timeout_handling: "return_pct_at_exit at the horizon's end, converted to R via the same stop_distance_pct"
+
+retry_logic:
+  max_reversal_attempts: 2
+  retry_on_new_pump_high: true
+  retry_on_bullish_hl_reformation: false
+  retry_on_strong_reclaim: false
+  note: "signal detection re-runs independently on each attempt's own re-anchored climax/post-pump window - no attempt #3, ever"
+
+# ---------------------------------------------------------------------------
+# Cost model - Phase 2C's CORRECTED accounting (research/entry_edge.py
+# resolve_exit_slippage_bps + compute_r_trades), BASE REALISTIC profile.
+# ---------------------------------------------------------------------------
+cost_model:
+  profile_name: "BASE_REALISTIC"
+  taker_fee_bps: 5.0
+  maker_fee_bps: 2.0
+  default_slippage_bps: 10.0
+  high_vol_slippage_multiplier: 2.5
+  stop_slippage_bps: 20.0
+  funding: "real per-bar funding_rate from feature_frame, prorated per bar held (bar_interval_ms / (8*3_600_000)) - NOT a flat placeholder"
+  entry_leg_slippage: "always default_slippage_bps x high_vol_multiplier (high_vol = realized_vol_ratio at entry > 2.0)"
+  exit_leg_slippage: "default_slippage_bps (TP-style) for profit/favorable-timeout exits; stop_slippage_bps (STOP-style) for adverse/adverse-timeout exits - mutually exclusive, never both"
+  secondary_stress_profiles: ["1.5x_BASE", "2x_BASE"]  # diagnostic sensitivity only, NOT used for the primary GO/STOP decision
+  zero_cost_profile: "diagnostic only, never used for GO/STOP"
+
+# ---------------------------------------------------------------------------
+# Verbatim AppConfig section values this candidate depends on, dumped from
+# config/default.yaml + config/backtest.yaml as loaded on frozen_at - for
+# audit/reproduction, not for direct load_config() consumption.
+# ---------------------------------------------------------------------------
+app_config_snapshot:
+  structure: {pivot_left_bars: 2, pivot_right_bars: 2, min_swing_distance_atr: 0.35, min_swing_distance_bps: 30.0, require_close_below_higher_low: true, close_confirmation_bars: 1, allow_wick_break: false}
+  stops: {atr_timeframe: "5m", atr_length: 14, atr_buffer_multiplier: 0.25, min_stop_bps: 40.0, max_stop_bps: 1200.0}
+  exhaustion_thresholds: {watch: 50.0, armed: 65.0, trade: 75.0, high_confidence: 85.0}
+  failed_reclaim: {enabled: true, reclaim_zone_bps: 35.0, max_bars_after_break: 24, require_lower_high: true, require_close_below_reclaim_zone: true}
+  sweep: {min_sweep_bps: 15.0, max_rejection_bars: 5, close_back_below_previous_high: true, upper_wick_body_ratio_min: 2.0}
+  cvd: {enabled: true, divergence_tolerance: 0.02, min_cvd_lookback_bars: 20, require_cvd_rollover_for_aggressive: false, require_cvd_rollover_for_standard: true}
+
+# ---------------------------------------------------------------------------
+# Code revision fingerprint (no git repo in this project - SHA256 over the
+# concatenated bytes of every source file whose logic this candidate's
+# result depends on, in the fixed order listed). Recompute and compare
+# before trusting any OOS run claims to be "the same frozen candidate" -
+# scripts/run_phase_2d_oos_validation.py should refuse to run (or must loudly
+# warn) if the recomputed hash does not match revision.combined_sha256.
+# ---------------------------------------------------------------------------
+revision:
+  files:
+    - path: "pump_exhaustion_reversal/features/oi.py"
+      sha256: "39c9256973b10517a0b58dce47d0a0f1baad2fd0cbb0ae06f554f01cfbe6fa17"
+    - path: "pump_exhaustion_reversal/features/volume.py"
+      sha256: "b13b23ff56b95e196c392f25611e83be6fa50c6d811168f7f3a3cf0a09e1ea85"
+    - path: "pump_exhaustion_reversal/strategy/exhaustion_detector.py"
+      sha256: "aadf4429fb08fe03dfb4b7bc564b005f40165ff32b4202a3781d632bb2b61bff"
+    - path: "pump_exhaustion_reversal/research/early_entry.py"
+      sha256: "49925922a8267989c383cdca9d72780e8af3b33d5f7863e86bf467f5ff706848"
+    - path: "pump_exhaustion_reversal/research/entry_edge.py"
+      sha256: "1eb36f2bab7e451fcdf8bad14c3f7a65ee7c9a587ea0271466b040f8b18a0d04"
+    - path: "pump_exhaustion_reversal/research/first_passage.py"
+      sha256: "2cc741f0e882c438b155320bbfef56af6cfbbd899de4d2e0cbd51112831ff86b"
+    - path: "pump_exhaustion_reversal/backtest/simulator.py"
+      sha256: "4354907ad72e89b582b8e095a25023125d1510534b7f0342424e5520401d80e1"
+    - path: "pump_exhaustion_reversal/backtest/execution_model.py"
+      sha256: "becc61d5f830ec245c3c493598d9937962e77f95a9b5d126bf82a750de5bee8b"
+    - path: "pump_exhaustion_reversal/config.py"
+      sha256: "7d1417093d3395dbfe13c68373e9adc12d09e57d2a63c8c59d9ee8b70def4ac6"
+  combined_sha256: "0e2431a17203f0b2f39ace9d9c66194d3d4fce64eedd49884f0bb2a259ded308"
+
+# ---------------------------------------------------------------------------
+# Pre-registered OOS acceptance criteria (Phase 2D point 17) - fixed BEFORE
+# looking at any OOS result.
+# ---------------------------------------------------------------------------
+oos_acceptance_criteria:
+  n_signals_preferred_minimum: 50
+  net_expectancy_r_must_exceed: 0.0
+  profit_factor_must_exceed: 1.15
+  positive_after_1_5x_cost_stress: "desired, not strictly required"
+  cluster_bootstrap_median_expectancy_must_exceed: 0.0
+  ci_not_catastrophically_wide: true  # judged qualitatively, no fixed numeric bound pre-registered
+  max_single_symbol_pnl_share_pct: 25.0
+  must_not_depend_on_a_single_market_regime: true
+  insufficient_sample_rule: "if n_signals < 50, status = INSUFFICIENT_SAMPLE regardless of point estimates - no GO/STOP verdict permitted"
+  outcomes: ["A_CONFIRMED_ENOUGH_FOR_PAPER_TRADING", "B_WEAK_UNCERTAIN_WAIT_FOR_MORE_DATA", "C_REJECT_CLOSE_BRANCH"]

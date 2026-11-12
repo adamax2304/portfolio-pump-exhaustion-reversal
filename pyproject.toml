@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pump-exhaustion-reversal"
+version = "0.1.0"
+description = "Pump Exhaustion Reversal - research/backtest engine (Stage 1: no live trading, no real execution)"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy",
+    "scipy",
+    "ccxt",
+    "pydantic>=2",
+    "pyyaml",
+    "typer",
+    "duckdb",
+    "pyarrow",
+    "matplotlib",
+    "plotly",
+    "statsmodels",
+    "requests",
+]
+
+[tool.setuptools.packages.find]
+include = ["pump_exhaustion_reversal*"]
+
+[tool.pytest.ini_options]
+testpaths = ["pump_exhaustion_reversal/tests"]
+python_files = ["test_*.py"]

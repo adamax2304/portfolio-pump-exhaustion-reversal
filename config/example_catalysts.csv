@@ -1,0 +1,4 @@
+timestamp,symbol,event_type,sentiment,source,confidence
+2026-06-15T09:00:00Z,EXAMPLEUSDT,listing,positive,manual,high
+2026-07-02T14:30:00Z,EXAMPLEUSDT,partnership,positive,manual,medium
+2026-07-20T18:00:00Z,SAMPLEUSDT,token_unlock,negative,manual,high

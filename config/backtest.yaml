@@ -1,0 +1,23 @@
+# Overlay on top of default.yaml for `scripts/run_backtest.py --config config/backtest.yaml`.
+# Only lists keys that differ from default.yaml - everything else (scoring
+# weights, thresholds, entry modes, risk, stops...) is inherited unchanged.
+#
+# timeframe_base is 5m, not 1m: full-depth OHLCV backfill (see plan/README
+# "data depth" section) targets 5m/15m/1h/4h/1d for the full window below,
+# while 1m is only backfilled for a shorter recent window (default 90d) and
+# used for fine-grained entry timing inside an already-detected event, not
+# as the base bar for the whole-history event scan. Using 5m as the base
+# keeps the event study/backtest lookahead-safe over the full date range
+# instead of silently truncating to whatever the 1m archive covers.
+
+backtest:
+  start_date: "2024-09-01"
+  end_date: "2026-08-25"
+  timeframe_base: "5m"
+  train_pct: 0.60
+  validation_pct: 0.20
+  oos_pct: 0.20
+  include_fees: true
+  include_slippage: true
+  include_funding: true
+  prevent_lookahead: true
